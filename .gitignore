@@ -1,0 +1,5 @@
+/_build.*
+/_stage.*
+/ospray
+/vtk
+/tmp
