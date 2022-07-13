@@ -4,6 +4,8 @@ project(vtkOSPRayExample)
 find_package(ospray REQUIRED)
 find_package(VTK REQUIRED)
 
+set(CMAKE_CXX_STANDARD 17)
+
 add_executable(
     main
     main.cpp

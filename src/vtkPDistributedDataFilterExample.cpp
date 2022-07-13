@@ -9,30 +9,22 @@
 #include <vector>
 
 // vtk
-#include <vtkCamera.h>
 #include <vtkCellData.h>
-#include <vtkColorTransferFunction.h>
 #include <vtkDataObject.h>
 #include <vtkHexahedron.h>
-#include <vtkJPEGWriter.h>
 #include <vtkMPIController.h>
 #include <vtkMultiProcessController.h>
 #include <vtkNew.h>
-#include <vtkOpenGLRenderer.h>
-#include <vtkOpenGLRenderWindow.h>
-#include <vtkOSPRayPass.h>
-#include <vtkOSPRayRendererNode.h>
 #include <vtkPDistributedDataFilter.h>
-#include <vtkPiecewiseFunction.h>
 #include <vtkPKdTree.h>
-#include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
 #include <vtkTimerLog.h>
 #include <vtkUnsignedShortArray.h>
 #include <vtkUnstructuredGrid.h>
-#include <vtkUnstructuredGridVolumeRayCastMapper.h>
-#include <vtkVolumeProperty.h>
-#include <vtkWindowToImageFilter.h>
+
+// OSPRay
+#include <ospray/ospray.h>
+#include <ospray/ospray_util.h>
 
 
 //---
@@ -402,6 +394,122 @@ int main(int argc, char **argv) {
 
   //   compositeDataIterator->GoToNextItem();
   // }
+
+  int width = 512;
+  int height = 512;
+  OSPDevice device{nullptr};
+  OSPData volumeDataData{nullptr};
+  OSPVolume volume{nullptr};
+  std::vector<float> transferFunctionColor{};
+  OSPData transferFunctionColorData{nullptr};
+  std::vector<float> TransferFunctionOpacity{};
+  OSPData transferFunctionOpacityData{nullptr};
+  OSPTransferFunction transferFunction{nullptr};
+  OSPVolumetricModel VolumetricModel{nullptr};
+  OSPGroup group{nullptr};
+  OSPInstance instance{nullptr};
+  OSPLight light{nullptr};
+  std::vector<float> worldRegion;
+  OSPData worldRegionData{nullptr};
+  OSPWorld world{nullptr};
+  OSPCamera camera{nullptr};
+  OSPRenderer renderer{nullptr};
+  OSPFrameBuffer frameBuffer{nullptr};
+
+  ospLoadModule("mpi");
+
+  device = ospNewDevice("mpiDistributed");
+  ospDeviceCommit(device);
+  ospSetCurrentDevice(device);
+
+  // if (volumeDataData) {
+  //   ospRelease(volumeDataData);
+  //   volumeDataData = nullptr;
+  // }
+
+  // volumeDataData = ospNewSharedData(volume, OSP_USHORT, nx, 0, ny, 0, nz, 0);
+  // ospCommit(volumeDataData);
+
+  // volume = ospNewVolume("structuredRegular");
+  // ospSetVec3f(volume, "gridOrigin", -0.5f, -0.5f, -0.5f);
+  // ospSetVec3f(volume, "gridSpacing", 1.0f/(float)nx, 1.0f/(float)ny, 1.0f/(float)nz);
+  // ospSetObject(volume, "data", volumeDataData);
+  // ospSetBool(volume, "cellCentered", 1);
+  // ospCommit(volume);
+
+  // if (transferFunctionColorData) {
+  //   ospRelease(transferFunctionColorData);
+  //   transferFunctionColorData = nullptr;
+  // }
+
+  // transferFunctionColor.clear();
+  // transferFunctionColor.insert(transferFunctionColor.end(), {
+  //   (CommRank % 3 == 0 ? 1.0f : 0.0f),
+  //   (CommRank % 3 == 1 ? 1.0f : 0.0f),
+  //   (CommRank % 3 == 2 ? 1.0f : 0.0f),
+  //   (CommRank % 3 == 0 ? 1.0f : 0.0f),
+  //   (CommRank % 3 == 1 ? 1.0f : 0.0f),
+  //   (CommRank % 3 == 2 ? 1.0f : 0.0f),
+  // });
+
+  // transferFunctionColorData = ospNewSharedData(transferFunctionColor.data(), OSP_VEC3F, transferFunctionColor.size() / 3);
+  // ospCommit(transferFunctionColorData);
+
+  // if (transferFunctionOpacityData) {
+  //   ospRelease(transferFunctionOpacityData);
+  //   transferFunctionOpacityData = nullptr;
+  // }
+
+  // TransferFunctionOpacity.clear();
+  // TransferFunctionOpacity.insert(TransferFunctionOpacity.end(), {
+  //   0.0f,
+  //   1.0f,
+  // });
+
+  // transferFunctionOpacityData = ospNewSharedData(TransferFunctionOpacity.data(), OSP_FLOAT, TransferFunctionOpacity.size() / 1);
+  // ospCommit(transferFunctionOpacityData);
+
+  // transferFunction = ospNewTransferFunction("piecewiseLinear");
+  // ospSetObject(transferFunction, "color", transferFunctionColorData);
+  // ospSetObject(transferFunction, "opacity", transferFunctionOpacityData);
+  // ospSetVec2f(transferFunction, "valueRange", (float)0.0f, (float)hi);
+  // ospCommit(transferFunction);
+
+  // VolumetricModel = ospNewVolumetricModel(nullptr);
+  // ospSetObject(VolumetricModel, "volume", volume);
+  // ospSetObject(VolumetricModel, "transferFunction", transferFunction);
+  // ospCommit(VolumetricModel);
+
+  group = ospNewGroup();
+  ospSetObjectAsData(group, "volume", OSP_VOLUMETRIC_MODEL, VolumetricModel);
+  ospCommit(group);
+
+  instance = ospNewInstance(nullptr);
+  ospSetObject(instance, "group", group);
+  ospCommit(instance);
+
+  light = ospNewLight("ambient");
+  ospCommit(light);
+
+  world = ospNewWorld();
+  ospSetObjectAsData(world, "instance", OSP_INSTANCE, instance);
+  ospSetObjectAsData(world, "light", OSP_LIGHT, light);
+  ospSetObject(world, "region", worldRegionData);
+  ospCommit(world);
+
+  camera = ospNewCamera("perspective");
+  ospSetFloat(camera, "aspect", (float)width / (float)height);
+  ospSetVec3f(camera, "position", 0.0f, 0.0f, 0.75f);
+  ospSetVec3f(camera, "direction", 0.0f, 0.0f, -1.0f);
+  ospSetVec3f(camera, "up", 0.0f, 1.0f, 0.0f);
+  ospCommit(camera);
+
+  renderer = ospNewRenderer("mpiRaycast");
+  ospSetInt(renderer, "pixelSamples", 16);
+  ospSetVec3f(renderer, "backgroundColor", 0.0f, 0.0f, 0.0f);
+  ospCommit(renderer);
+
+  frameBuffer = ospNewFrameBuffer(width, height, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
 
   return 0;
 }

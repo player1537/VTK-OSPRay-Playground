@@ -80,6 +80,42 @@ go-docker--run() {
     "$@"
 }
 
+# env: re par
+go-docker--buildall() {
+    if [ -n "${re+isset}" ]; then
+        go-docker-stop \
+        || die "Failed: go-docker-stop"
+    fi
+
+    go-docker-build \
+    || die "Failed: go-docker-build"
+
+    if [ "$(docker ps -q -f name="${docker_name:?}")" = "" ]; then
+        go-docker-start \
+        || die "Failed: go-docker-start"
+    fi
+}
+
+go-docker-buildall() {
+    local re par
+    go-docker--buildall
+}
+
+go-docker-rebuildall() {
+    local re= par
+    go-docker--buildall
+}
+
+go-docker-parbuildall() {
+    local re par=
+    go-docker--buildall
+}
+
+go-docker-reparbuildall() {
+    local re= par=
+    go-docker--buildall
+}
+
 
 #---
 
@@ -168,6 +204,25 @@ go-spack-exec() {
 
 go-spack-go() {
     go-spack-run go "$@"
+}
+
+# env: re par
+go-spack--buildall() {
+    [ -e "${spack_git_source:?}" ] || \
+    go-spack-git-clone \
+    || die "go-spack-git-clone"
+
+    [ -e "${spack_env:?}" ] || \
+    go-spack-env-create \
+    || die "go-spack-env-create"
+
+    go-spack-install \
+    || die "go-spack-install"
+}
+
+go-spack-buildall() {
+    local re par
+    go-spack--buildall
 }
 
 
@@ -284,6 +339,32 @@ go-ospray-exec() {
 
 go-ospray-vtk() {
     go-ospray-run go-vtk "$@"
+}
+
+# env: re par
+go-ospray--buildall() {
+    [ -e "${ospray_git_source:?}" ] ||
+    go-ospray-git-clone \
+    || die "go-ospray-git-clone"
+
+    go-ospray-cmake-configure \
+    || die "go-ospray-cmake-configure"
+
+    go-ospray-cmake-${re+re}${par+par}build \
+    || die "go-ospray-cmake-build"
+
+    go-ospray-cmake-install \
+    || die "go-ospray-cmake-install"
+}
+
+go-ospray-buildall() {
+    local re par
+    go-ospray--buildall
+}
+
+go-ospray-parbuildall() {
+    local re par=
+    go-ospray--buildall
 }
 
 
@@ -652,6 +733,30 @@ go-vtk-src() {
     go-vtk-run go-src "$@"
 }
 
+go-vtk--buildall() {
+    [ -e "${vtk_git_source:?}" ] ||
+    go-vtk-git-clone \
+    || die "go-vtk-git-clone"
+
+    go-vtk-cmake-configure \
+    || die "go-vtk-cmake-configure"
+
+    go-vtk-cmake--build \
+    || die "go-vtk-cmake--build"
+
+    go-vtk-cmake-install \
+    || die "go-vtk-cmake-install"
+}
+
+go-vtk-buildall() {
+    local re par
+    go-vtk--buildall
+}
+
+go-vtk-parbuildall() {
+    local re par=
+    go-vtk--buildall
+}
 
 #---
 
@@ -738,6 +843,23 @@ go-src-go() {
 
 go-src-exec() {
     go-src-run exec "$@"
+}
+
+# env: re par
+go-src--buildall() {
+    go-src-cmake-configure \
+    || die "go-src-cmake-configure"
+
+    go-src-cmake--build \
+    || die "go-src-cmake--build"
+
+    go-src-cmake-install \
+    || die "go-src-cmake-install"
+}
+
+go-src-buildall() {
+    local re par
+    go-src--buildall
 }
 
 
