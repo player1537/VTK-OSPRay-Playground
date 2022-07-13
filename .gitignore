@@ -1,5 +1,9 @@
-/_build.*
-/_stage.*
-/ospray
-/vtk
+/build
+/stage
+/senv
 /tmp
+/gdb*.txt
+/core.*
+/external/vtk
+/external/ospray
+/tools/spack

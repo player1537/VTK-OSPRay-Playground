@@ -1,8 +1,19 @@
-ospray_config+=(
-    -DCMAKE_BUILD_TYPE:STRING=DebWithRelInfo
+if [ "${USER:-}" = "thobson" ]; then
+    docker_tag=thobson2/${docker_tag##*/}
+    docker_tag=${docker_tag%%:*}:latest
+
+    docker_name=thobson2--${docker_name##*--}
+fi
+
+ospray_cmake_config+=(
+    -DCMAKE_BUILD_TYPE:STRING=Debug
 )
-vtk_config+=(
+vtk_cmake_config+=(
+    -DCMAKE_BUILD_TYPE:STRING=Debug
     -D_vtk_module_log=module
+)
+src_cmake_config+=(
+    -DCMAKE_BUILD_TYPE:STRING=Debug
 )
 
 go-vtk-debug() {

@@ -1,4 +1,6 @@
 go.sh
 env.sh
+tools/docker/Dockerfile
 src/CMakeLists.txt
 src/main.cpp
+src/vtkPDistributedDataFilterExample.cpp

@@ -2,86 +2,244 @@
 
 die() { printf $'Error: %s\n' "$*" >&2; exit 1; }
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
-PATH=${root:?}/go.sh.d${PATH:+:${PATH:?}}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 project=${root##*/}
 user=${USER:-nouser}
 hostname=${HOSTNAME:-nohostname}
 
+
 #---
 
-ospray_source=${root:?}/ospray
-ospray_repo=https://github.com/ospray/ospray.git
-ospray_ref=v2.9.0
-ospray_build=${root:?}/_build.ospray
-ospray_stage=${root:?}/_stage.ospray
-ospray_config=(
+mpich_version=3.4.2
+
+
+#---
+
+docker_source=${root:?}/tools/docker
+docker_tag=(
+    ${project,,}:latest
+)
+docker_name=${project:?}
+docker_root=${root:?}
+
+go-docker() {
+    "${FUNCNAME[0]:?}-$@"
+}
+
+go-docker-build() (
+    exec docker build \
+        "${docker_tag[@]/#/--tag=}" \
+        "${docker_source:?}"
+)
+
+go-docker-start() (
+    exec docker run \
+        --rm \
+        --detach \
+        --init \
+        --privileged \
+        --name "${docker_name:?}" \
+        --mount "type=bind,src=/etc/passwd,dst=/etc/passwd,ro" \
+        --mount "type=bind,src=/etc/group,dst=/etc/group,ro" \
+        --mount "type=bind,src=${HOME:?},dst=${HOME:?},ro" \
+        --mount "type=bind,src=${docker_root:?},dst=${docker_root:?}" \
+        "${docker_tag:?}" \
+        sleep infinity
+)
+
+go-docker-stop() (
+    exec docker stop \
+        --time 0 \
+        "${docker_name:?}"
+)
+
+go-docker-exec() (
+    exec docker exec \
+        --interactive \
+        --detach-keys="ctrl-q,ctrl-q" \
+        --tty \
+        --user "$(id -u):$(id -g)" \
+        --workdir "${PWD:?}" \
+        --env USER \
+        --env HOSTNAME \
+        "${docker_name:?}" \
+        "$@"
+)
+
+go-docker-go() {
+    go-docker-exec "${root:?}/go.sh" \
+        "$@"
+}
+
+go-docker-run() {
+    go-docker-go docker--run \
+        "$@"
+}
+
+go-docker--run() {
+    "$@"
+}
+
+
+#---
+
+spack_source=${root:?}/tools/spack
+spack_cache=${root:?}/tmp/spack
+spack_env=${root:?}/senv
+spack_specs=(
+    mpich@4.0.2
+)
+
+spack_git_source=${spack_source:?}
+spack_git_repo=https://github.com/spack/spack.git
+spack_git_ref=
+
+go--spack() (
+    SPACK_DISABLE_LOCAL_CONFIG=1 \
+    SPACK_USER_CACHE_PATH=${spack_cache:?} \
+    exec "${spack_source:?}/bin/spack" \
+        "$@"
+)
+
+go-spack() {
+    go docker run "${FUNCNAME[0]:?}-$@"
+}
+
+go-spack-git() {
+    "${FUNCNAME[0]:?}-$@"
+}
+
+go-spack-git-clone() (
+    exec git \
+        clone \
+        "${spack_git_repo:?}" \
+        "${spack_git_source:?}" \
+        ${spack_git_ref:+--branch "${spack_git_ref:?}"}
+)
+
+go-spack-git-checkout() (
+    exec git \
+        -C "${spack_git_source:?}" \
+        checkout \
+        "${spack_git_ref:?}"
+)
+
+go-spack-env() {
+    "${FUNCNAME[0]:?}-$@"
+}
+
+go-spack-env-create() {
+    go--spack \
+        env create \
+        -d "${spack_env##*/}" \
+        "${spack_env%%/*}"
+}
+
+go-spack-install() {
+    mkdir -p "${spack_cache:?}" \
+    || die "Failed to create spack cache directory: ${spack_cache:?}"
+
+    go--spack \
+        --env "${spack_env:?}" \
+        install \
+        --verbose \
+        "${spack_specs[@]}"
+}
+
+go-spack-spec() {
+    go--spack \
+        spec \
+        "${spack_specs[@]}"
+}
+
+go-spack-run() {
+    local tmp
+    tmp=$(shopt -po xtrace)
+    set +x
+    eval $(go--spack --env "${spack_env:?}" load --sh mpich)
+    set +vx; eval "${tmp:?}"
+
+    "$@"
+}
+
+go-spack-exec() {
+    go-spack-run exec "$@"
+}
+
+go-spack-go() {
+    go-spack-run go "$@"
+}
+
+
+#---
+
+ospray_source=${root:?}/external/ospray
+
+ospray_git_source=${ospray_source:?}
+ospray_git_repo=https://github.com/ospray/ospray.git
+ospray_git_ref=v2.9.0
+
+ospray_cmake_source=${ospray_source:?}/scripts/superbuild
+ospray_cmake_build=${root:?}/build/ospray
+ospray_cmake_stage=${root:?}/stage/ospray
+ospray_cmake_config=(
     -DCMAKE_POLICY_DEFAULT_CMP0074:STRING=NEW
-    -DOSPRAY_ENABLE_APPS:BOOL=OFF
     -DINSTALL_IN_SEPARATE_DIRECTORIES:BOOL=OFF
 )
 
-declare -n ospray_git_source=ospray_source
-declare -n ospray_git_repo=ospray_repo
-declare -n ospray_git_ref=ospray_ref
-
-ospray_cmake_source=${ospray_source:?}/scripts/superbuild
-declare -n ospray_cmake_build=ospray_build
-declare -n ospray_cmake_stage=ospray_stage
-declare -n ospray_cmake_config=ospray_config
-
-ospray_run_bindir=${ospray_stage:?}/bin
-ospray_run_libdir=${ospray_stage:?}/lib:${ospray_stage:?}/lib64
-ospray_run_incdir=${ospray_stage:?}/include
+ospray_run_bindir=${ospray_cmake_stage:?}/bin
+ospray_run_libdir=${ospray_cmake_stage:?}/lib:${ospray_cmake_stage:?}/lib64
+ospray_run_incdir=${ospray_cmake_stage:?}/include
 
 
 go-ospray() {
-    go-ospray-"$@"
+    go spack run "${FUNCNAME[0]:?}-$@"
 }
 
-go-ospray-clean() {
-    rm -rf \
-        "${ospray_build:?}" \
-        "${ospray_stage:?}"
-}
+go-ospray-clean() (
+    exec rm -rf \
+        "${ospray_cmake_build:?}" \
+        "${ospray_cmake_stage:?}"
+)
 
 go-ospray-git() {
-    go-ospray-git-"$@"
+    "${FUNCNAME[0]:?}-$@"
 }
 
-go-ospray-git-clone() {
-    git clone \
+go-ospray-git-clone() (
+    exec git clone \
         "${ospray_git_repo:?}" \
         "${ospray_git_source:?}" \
         ${ospray_git_ref:+--branch "${ospray_git_ref:?}"}
-}
+)
 
-go-ospray-git-checkout() {
-    git \
+go-ospray-git-checkout() (
+    exec git \
         -C "${ospray_git_source:?}" \
         checkout \
         ${ospray_git_ref:+"${ospray_git_ref:?}"}
-}
+)
 
 go-ospray-cmake() {
-    go-ospray-cmake-"$@"
+    "${FUNCNAME[0]:?}-$@"
 }
 
-go-ospray-cmake-configure() {
-    cmake \
+go-ospray-cmake-configure() (
+    exec cmake \
         -H"${ospray_cmake_source:?}" \
         -B"${ospray_cmake_build:?}" \
         -DCMAKE_INSTALL_PREFIX:PATH="${ospray_cmake_stage:?}" \
         "${ospray_cmake_config[@]}"
-}
+)
 
 # env: re, par
-go-ospray-cmake--build() {
-    cmake \
+go-ospray-cmake--build() (
+    exec cmake \
         --build "${ospray_cmake_build:?}" \
         --verbose \
         ${re+--clean-first} \
         ${par+--parallel}
-}
+)
 
 go-ospray-cmake-build() {
     local re par
@@ -103,11 +261,11 @@ go-ospray-cmake-reparbuild() {
     go-ospray-cmake--build
 }
 
-go-ospray-cmake-install() {
-    cmake \
+go-ospray-cmake-install() (
+    exec cmake \
         --install "${ospray_cmake_build:?}" \
         --verbose
-}
+)
 
 go-ospray-run() {
     PATH=${ospray_run_bindir:?}${PATH:+:${PATH:?}} \
@@ -124,14 +282,23 @@ go-ospray-exec() {
     go-ospray-run exec "$@"
 }
 
+go-ospray-vtk() {
+    go-ospray-run go-vtk "$@"
+}
+
+
 #---
 
-vtk_source=${root:?}/vtk
-vtk_repo=https://github.com/Kitware/VTK.git
-vtk_ref=v9.1.0
-vtk_build=${root:?}/_build.vtk
-vtk_stage=${root:?}/_stage.vtk
-vtk_config=(
+vtk_source=${root:?}/external/vtk
+
+vtk_git_source=${vtk_source:?}
+vtk_git_repo=https://github.com/Kitware/VTK.git
+vtk_git_ref=v9.1.0
+
+vtk_cmake_source=${vtk_source:?}
+vtk_cmake_build=${root:?}/build/vtk
+vtk_cmake_stage=${root:?}/stage/vtk
+vtk_cmake_config=(
     -DBUILD_SHARED_LIBS:BOOL=OFF
     -DVTK_ENABLE_LOGGING:BOOL=OFF
     -DVTK_ENABLE_WRAPPING:BOOL=OFF
@@ -144,7 +311,9 @@ vtk_config=(
     -DVTK_BUILD_TESTING=OFF
     -DVTK_BUILD_DOCUMENTATION=OFF
     -DVTK_REPORT_OPENGL_ERRORS=OFF
-    -DVTK_ALL_NEW_OBJECT_FACTORY=OFF
+    -DVTK_ALL_NEW_OBJECT_FACTORY=ON
+    -DVTK_USE_MPI=ON
+    -DVTK_OPENGL_HAS_EGL=ON
 
     -DVTK_MODULE_ENABLE_VTK_AcceleratorsVTKmCore:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_AcceleratorsVTKmDataModel:STRING=DONT_WANT
@@ -177,12 +346,12 @@ vtk_config=(
     -DVTK_MODULE_ENABLE_VTK_FiltersImaging:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_FiltersModeling:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_FiltersOpenTURNS:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_FiltersParallel:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_FiltersParallel:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_FiltersParallelDIY2:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_FiltersParallelFlowPaths:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_FiltersParallelGeometry:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_FiltersParallelGeometry:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_FiltersParallelImaging:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_FiltersParallelMPI:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_FiltersParallelMPI:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_FiltersParallelStatistics:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_FiltersParallelVerdict:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_FiltersPoints:STRING=DONT_WANT
@@ -282,7 +451,7 @@ vtk_config=(
     -DVTK_MODULE_ENABLE_VTK_IOXdmf3:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_ParallelCore:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_ParallelDIY:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_ParallelMPI:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_ParallelMPI:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_ParallelMPI4Py:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingAnnotation:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingContext2D:STRING=DONT_WANT
@@ -298,18 +467,18 @@ vtk_config=(
     -DVTK_MODULE_ENABLE_VTK_RenderingLOD:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingLabel:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingMatplotlib:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2:STRING=WANT
+    -DVTK_MODULE_ENABLE_VTK_RenderingOpenGL2:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingOpenVR:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingParallel:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingParallelLIC:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_PythonContext2D:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingQt:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingRayTracing:STRING=WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingSceneGraph:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_RenderingRayTracing:STRING=YES
+    -DVTK_MODULE_ENABLE_VTK_RenderingSceneGraph:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingTk:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingUI:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_RenderingUI:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingVR:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingVolumeAMR:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingVtkJS:STRING=DONT_WANT
@@ -383,68 +552,59 @@ vtk_config=(
     -DVTK_DEFAULT_RENDER_WINDOW_HEADLESS:BOOL=ON
 )
 
-declare -n vtk_git_source=vtk_source
-declare -n vtk_git_repo=vtk_repo
-declare -n vtk_git_ref=vtk_ref
-
-declare -n vtk_cmake_source=vtk_source
-declare -n vtk_cmake_build=vtk_build
-declare -n vtk_cmake_stage=vtk_stage
-declare -n vtk_cmake_config=vtk_config
-
-vtk_run_bindir=${vtk_stage:?}/bin
-vtk_run_libdir=${vtk_stage:?}/lib
-vtk_run_incdir=${vtk_stage:?}/include
+vtk_run_bindir=${vtk_cmake_stage:?}/bin
+vtk_run_libdir=${vtk_cmake_stage:?}/lib
+vtk_run_incdir=${vtk_cmake_stage:?}/include
 
 
 go-vtk() {
-    go-vtk-"$@"
+    go ospray run "${FUNCNAME[0]:?}-$@"
 }
 
-go-vtk-clean() {
-    rm -rf \
-        "${vtk_build:?}" \
-        "${vtk_stage:?}"
-}
+go-vtk-clean() (
+    exec rm -rf \
+        "${vtk_cmake_build:?}" \
+        "${vtk_cmake_stage:?}"
+)
 
 go-vtk-git() {
-    go-vtk-git-"$@"
+    "${FUNCNAME[0]:?}-$@"
 }
 
-go-vtk-git-clone() {
-    git clone \
+go-vtk-git-clone() (
+    exec git clone \
         "${vtk_git_repo:?}" \
         "${vtk_git_source:?}" \
         ${vtk_git_ref:+--branch "${vtk_git_ref:?}"}
-}
+)
 
-go-vtk-git-checkout() {
-    git \
+go-vtk-git-checkout() (
+    exec git \
         -C "${vtk_git_source:?}" \
         checkout \
         ${vtk_git_ref:+"${vtk_git_ref:?}"}
-}
+)
 
 go-vtk-cmake() {
-    go-vtk-cmake-"$@"
+    "${FUNCNAME[0]:?}-$@"
 }
 
-go-vtk-cmake-configure() {
-    cmake \
+go-vtk-cmake-configure() (
+    exec cmake \
         -H"${vtk_cmake_source:?}" \
         -B"${vtk_cmake_build:?}" \
         -DCMAKE_INSTALL_PREFIX:PATH="${vtk_cmake_stage:?}" \
         "${vtk_cmake_config[@]}"
-}
+)
 
 # env: re, par
-go-vtk-cmake--build() {
-    cmake \
+go-vtk-cmake--build() (
+    exec cmake \
         --build "${vtk_cmake_build:?}" \
         --verbose \
         ${re+--clean-first} \
         ${par+--parallel}
-}
+)
 
 go-vtk-cmake-build() {
     local re par
@@ -466,17 +626,17 @@ go-vtk-cmake-reparbuild() {
     go-vtk-cmake--build
 }
 
-go-vtk-cmake-install() {
-    cmake \
+go-vtk-cmake-install() (
+    exec cmake \
         --install "${vtk_cmake_build:?}" \
         --verbose
-}
+)
 
 go-vtk-run() {
     PATH=${vtk_run_bindir:?}${PATH:+:${PATH:?}} \
     CPATH=${vtk_run_incdir:?}${CPATH:+:${CPATH:?}} \
     LD_LIBRARY_PATH=${vtk_run_libdir:?}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH:?}} \
-    vtk_ROOT=${vtk_stage:?} \
+    vtk_ROOT=${vtk_cmake_stage:?} \
     "$@"
 }
 
@@ -488,54 +648,56 @@ go-vtk-exec() {
     go-vtk-run exec "$@"
 }
 
+go-vtk-src() {
+    go-vtk-run go-src "$@"
+}
+
+
 #---
 
 src_source=${root:?}/src
-src_build=${root:?}/_build.src
-src_stage=${root:?}/_stage.src
-src_config=(
+
+src_cmake_source=${src_source:?}
+src_cmake_build=${root:?}/build/src
+src_cmake_stage=${root:?}/stage/src
+src_cmake_config=(
 )
 
-declare -n src_cmake_source=src_source
-declare -n src_cmake_build=src_build
-declare -n src_cmake_stage=src_stage
-declare -n src_cmake_config=src_config
-
-src_run_bindir=${src_stage:?}/bin
-src_run_libdir=${src_stage:?}/lib
-src_run_incdir=${src_stage:?}/include
+src_run_bindir=${src_cmake_stage:?}/bin
+src_run_libdir=${src_cmake_stage:?}/lib
+src_run_incdir=${src_cmake_stage:?}/include
 
 
 go-src() {
-    go-src-"$@"
+    go vtk run "${FUNCNAME[0]:?}-$@"
 }
 
-go-src-clean() {
-    rm -rf \
-        "${src_build:?}" \
-        "${src_stage:?}"
-}
+go-src-clean() (
+    exec rm -rf \
+        "${src_cmake_build:?}" \
+        "${src_cmake_stage:?}"
+)
 
 go-src-cmake() {
-    go-src-cmake-"$@"
+    "${FUNCNAME[0]:?}-$@"
 }
 
-go-src-cmake-configure() {
-    cmake \
+go-src-cmake-configure() (
+    exec cmake \
         -H"${src_cmake_source:?}" \
         -B"${src_cmake_build:?}" \
         -DCMAKE_INSTALL_PREFIX:PATH="${src_cmake_stage:?}" \
         "${src_cmake_config[@]}"
-}
+)
 
 # env: re, par
-go-src-cmake--build() {
-    cmake \
+go-src-cmake--build() (
+    exec cmake \
         --build "${src_cmake_build:?}" \
         --verbose \
         ${re+--clean-first} \
         ${par+--parallel}
-}
+)
 
 go-src-cmake-build() {
     local re par
@@ -557,11 +719,11 @@ go-src-cmake-reparbuild() {
     go-src-cmake--build
 }
 
-go-src-cmake-install() {
-    cmake \
+go-src-cmake-install() (
+    exec cmake \
         --install "${src_cmake_build:?}" \
         --verbose
-}
+)
 
 go-src-run() {
     PATH=${src_run_bindir:?}${PATH:+:${PATH:?}} \
@@ -578,11 +740,67 @@ go-src-exec() {
     go-src-run exec "$@"
 }
 
+
 #---
+
+go--demo-exec() {
+    1>"${root:?}/tmp/output.txt" \
+    2>&1 \
+    go "$@"
+}
+
+go-demo() {
+    go() {
+        local _go_tmp
+        printf -v _go_tmp $' %q' go "$@"
+        printf -v _go_tmp $'$%s' "${_go_tmp:?}"
+
+        1>&2 printf $'%s' "${_go_tmp:?}"
+
+        if
+            /usr/bin/time \
+            -f $'\r[real %E]'" ${_go_tmp:?}" \
+            -- \
+                "${root:?}/go.sh" \
+                -demo-exec \
+                    "$@"
+        then
+            return 0
+        else
+            1>&2 printf $'Command failed. Output:\n'
+            1>&2 printf $'====\n'
+            1>&2 cat "${root:?}/tmp/output.txt"
+            1>&2 printf $'====\n'
+            return 1
+        fi
+    }
+
+    go src cmake configure \
+    || die "Configure failed"
+
+    go src cmake build \
+    || die "Build failed"
+
+    go src cmake install \
+    || die "Install failed"
+
+    go() {
+        "${FUNCNAME[0]:?}-$@"
+    }
+
+    go src exec mpirun -np 4 gdb -ex=r --args vtkPDistributedDataFilterExample -d3 1
+}
+
+
+#---
+
+go() {
+    "${FUNCNAME[0]:?}-$@"
+}
 
 test -f "${root:?}/env.sh" && source "${_:?}"
 test -f "${root:?}/${hostname:+@${hostname:?}.env.sh}" && source "${_:?}"
 test -f "${root:?}/${user:+${user:?}@.env.sh}" && source "${_:?}"
 test -f "${root:?}/${user:+${hostname:+${user:?}@${hostname:?}.env.sh}}" && source "${_:?}"
 
-go-"$@"
+go "$@"
