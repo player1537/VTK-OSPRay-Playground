@@ -34,6 +34,7 @@ target_link_libraries(
     PUBLIC
         ospray::ospray
         ${VTK_LIBRARIES}
+        VTK::RenderingVolumeOpenGL2
 )
 
 install(

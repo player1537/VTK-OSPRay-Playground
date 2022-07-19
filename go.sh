@@ -240,6 +240,7 @@ ospray_cmake_stage=${root:?}/stage/ospray
 ospray_cmake_config=(
     -DCMAKE_POLICY_DEFAULT_CMP0074:STRING=NEW
     -DINSTALL_IN_SEPARATE_DIRECTORIES:BOOL=OFF
+    -DBUILD_OSPRAY_MODULE_MPI:BOOL=ON
 )
 
 ospray_run_bindir=${ospray_cmake_stage:?}/bin
@@ -561,7 +562,7 @@ vtk_cmake_config=(
     -DVTK_MODULE_ENABLE_VTK_RenderingVR:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_RenderingVolume:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingVolumeAMR:STRING=DONT_WANT
-    -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=DONT_WANT
+    -DVTK_MODULE_ENABLE_VTK_RenderingVolumeOpenGL2:STRING=YES
     -DVTK_MODULE_ENABLE_VTK_RenderingVtkJS:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_TestingCore:STRING=DONT_WANT
     -DVTK_MODULE_ENABLE_VTK_TestingGenericBridge:STRING=DONT_WANT
@@ -865,6 +866,52 @@ go-src-buildall() {
 
 #---
 
+# env: re par
+go--buildall() {
+    go docker -buildall \
+    || die
+
+    go spack -buildall \
+    || die
+
+    go ospray -buildall \
+    || die
+
+    go vtk -buildall \
+    || die
+
+    go src -buildall \
+    || die
+}
+
+go-buildall() {
+    local re par
+    go--buildall
+}
+
+go-parbuildall() {
+    local re par=
+    go--buildall
+}
+
+go--demo() {
+    go src run mpirun \
+    -np 4 \
+        gdb \
+        -ex='set confirm on' \
+        -ex=r \
+        --args \
+            vtkPDistributedDataFilterExample \
+            -d3 0 \
+            -nsteps 512 \
+    || die "Failed: vtkPDistributedDataFilterExample"
+
+    convert \
+    "${root:?}/vtkOSPRay.0.ppm" \
+    "${root:?}/vtkOSPRay.0.png" \
+    || die "Failed: convert"
+}
+
 go--demo-exec() {
     1>"${root:?}/tmp/output.txt" \
     2>&1 \
@@ -910,7 +957,7 @@ go-demo() {
         "${FUNCNAME[0]:?}-$@"
     }
 
-    go src exec mpirun -np 4 gdb -ex=r --args vtkPDistributedDataFilterExample -d3 1
+    go -demo
 }
 
 

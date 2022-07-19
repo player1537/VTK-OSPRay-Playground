@@ -11,7 +11,10 @@
 // vtk
 #include <vtkCellData.h>
 #include <vtkDataObject.h>
+#include <vtkDoubleArray.h>
+#include <vtkFloatArray.h>
 #include <vtkHexahedron.h>
+#include <vtkInformation.h>
 #include <vtkMPIController.h>
 #include <vtkMultiProcessController.h>
 #include <vtkNew.h>
@@ -21,10 +24,25 @@
 #include <vtkTimerLog.h>
 #include <vtkUnsignedShortArray.h>
 #include <vtkUnstructuredGrid.h>
+#include <vtkRenderWindow.h>
+#include <vtkOSPRayPass.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkColorTransferFunction.h>
+#include <vtkVolumeProperty.h>
+#include <vtkUnstructuredGridVolumeRayCastMapper.h>
+#include <vtkVolume.h>
+#include <vtkRenderer.h>
+#include <vtkCamera.h>
+#include <vtkWindowToImageFilter.h>
+#include <vtkJPEGWriter.h>
+#include <vtkObjectFactoryCollection.h>
 
 // OSPRay
 #include <ospray/ospray.h>
 #include <ospray/ospray_util.h>
+
+// MPI
+#include <mpi.h>
 
 
 //---
@@ -151,7 +169,8 @@ vtkUnstructuredGrid *Mandelbrot::vtk(vtkUnstructuredGrid *unstructuredGrid) {
   Array *array;
 
   if (unstructuredGrid == nullptr) {
-    points = Points::New();
+    points = Points::New(VTK_DOUBLE);
+    std::cerr << *points->GetData();
 
     array = Array::New();
     array->SetName("nsteps");
@@ -228,16 +247,53 @@ struct Assignment {
 
 //---
 
+// helper function to write the rendered image as PPM file
+static void writePPM(const char *fileName, int size_x, int size_y, const uint32_t *pixel) {
+  using namespace std;
+
+  FILE *file = fopen(fileName, "wb");
+  if (!file) {
+    fprintf(stderr, "fopen('%s', 'wb') failed: %d", fileName, errno);
+    return;
+  }
+  fprintf(file, "P6\n%i %i\n255\n", size_x, size_y);
+  unsigned char *out = (unsigned char *)alloca(3 * size_x);
+  for (int y = 0; y < size_y; y++) {
+    const unsigned char *in =
+        (const unsigned char *)&pixel[(size_y - 1 - y) * size_x];
+    for (int x = 0; x < size_x; x++) {
+      out[3 * x + 0] = in[4 * x + 0];
+      out[3 * x + 1] = in[4 * x + 1];
+      out[3 * x + 2] = in[4 * x + 2];
+    }
+    fwrite(out, 3 * size_x, sizeof(char), file);
+  }
+  fprintf(file, "\n");
+  fclose(file);
+}
+
+
+//---
+
 int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
+  int provided;
+  int success = MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+  if (success != MPI_SUCCESS) {
+    fprintf(stderr, "Error while initializing MPI\n");
+    return 1;
+  }
+
+  if (provided != MPI_THREAD_MULTIPLE) {
+    fprintf(stderr, "MPI provided the wrong level of thread support\n");
+    return 1;
+  }
 
   using Controller = vtkMPIController;
   vtkNew<Controller> controller;
-  controller->Initialize(&argc, &argv, /* initializedExternally= */0);
+  controller->Initialize(&argc, &argv, /* initializedExternally= */1);
   struct guard {
     guard(Controller *c) { vtkMultiProcessController::SetGlobalController(c); };
-    ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
+    // ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
   } guard(controller);
 
 #define DEBUG(Msg)                                                             \
@@ -370,6 +426,16 @@ int main(int argc, char **argv) {
     distributedDataFilter->SetUseMinimalMemory(1);
     distributedDataFilter->SetMinimumGhostLevel(0);
     distributedDataFilter->RetainKdtreeOn();
+    
+    // distributedDataFilter->UpdateDataObject();
+    // {
+    //   auto dataObject = distributedDataFilter->GetOutputDataObject(0);
+    //   auto grid = vtkUnstructuredGrid::SafeDownCast(dataObject);
+    //   auto points = vtkPoints::New();
+    //   points->SetDataType(VTK_FLOAT);
+    //   grid->SetPoints(points);
+    // }
+
     DEBUG_RANK0(<< "D3: " << *distributedDataFilter);
     distributedDataFilter->Update();
 
@@ -381,7 +447,7 @@ int main(int argc, char **argv) {
     unstructuredGrid = UnstructuredGrid::SafeDownCast(distributedDataFilter->GetOutput());
   }
 
-  DEBUG(<< *unstructuredGrid);
+  DEBUG(<< "ugrid: " << *unstructuredGrid);
 
   // using CompositeDataIterator = vtkCompositeDataIterator;
   // vtkSmartPointer<CompositeDataIterator> compositeDataIterator = multiBlockDataSet->NewIterator();
@@ -395,10 +461,102 @@ int main(int argc, char **argv) {
   //   compositeDataIterator->GoToNextItem();
   // }
 
+  if (controller->Barrier(), opt_rank == 0) {
+    using ObjectFactory = vtkObjectFactory;
+    using ObjectFactoryCollection = vtkObjectFactoryCollection;
+    ObjectFactoryCollection *objectFactoryCollection = ObjectFactory::GetRegisteredFactories();
+
+    using CollectionSimpleIterator = vtkCollectionSimpleIterator;
+    CollectionSimpleIterator collectionSimpleIterator;
+    objectFactoryCollection->InitTraversal(collectionSimpleIterator);
+    ObjectFactory *objectFactory{nullptr};
+    while ((objectFactory = objectFactoryCollection->GetNextObjectFactory(collectionSimpleIterator)) != nullptr) {
+      std::cerr << *objectFactory << std::endl;
+    }
+  }
+
+# if 1
+
+  const int Width = 512;
+  const int Height = 512;
+
+  using RenderWindow = vtkRenderWindow;
+  vtkNew<RenderWindow> renderWindow;
+  renderWindow->EraseOn();
+  renderWindow->ShowWindowOff();
+  renderWindow->UseOffScreenBuffersOn();
+  renderWindow->SetSize(Width, Height);
+  renderWindow->SetMultiSamples(0);
+
+  using RenderPass = vtkOSPRayPass;
+  vtkNew<RenderPass> renderPass;
+  renderPass->DebugOn();
+
+  using PiecewiseFunction = vtkPiecewiseFunction;
+  vtkNew<PiecewiseFunction> piecewiseFunction;
+  piecewiseFunction->AddPoint(0.0, 0.5);
+  piecewiseFunction->AddPoint(1.0, 1.0);
+
+  using ColorTransferFunction = vtkColorTransferFunction;
+  vtkNew<ColorTransferFunction> colorTransferFunction;
+  colorTransferFunction->SetColorSpaceToRGB();
+  colorTransferFunction->AddRGBPoint(0.0, 1.0, 0.0, 0.0);
+  colorTransferFunction->AddRGBPoint(1.0, 0.0, 1.0, 0.0);
+
+  using VolumeProperty = vtkVolumeProperty;
+  vtkNew<VolumeProperty> volumeProperty;
+  volumeProperty->SetScalarOpacity(piecewiseFunction);
+  volumeProperty->SetColor(colorTransferFunction);
+  volumeProperty->ShadeOff();
+  volumeProperty->SetInterpolationTypeToLinear();
+
+  using VolumeMapper = vtkUnstructuredGridVolumeRayCastMapper;
+  vtkNew<VolumeMapper> volumeMapper;
+  volumeMapper->SetInputData(unstructuredGrid);
+
+  using Volume = vtkVolume;
+  vtkNew<Volume> volume;
+  volume->SetProperty(volumeProperty);
+  volume->SetMapper(volumeMapper);
+
+  using Renderer = vtkRenderer;
+  vtkNew<Renderer> renderer;
+  renderer->SetBackground(1.0, 1.0, 1.0);
+  // renderer->SetPass(renderPass);
+  renderer->AddVolume(volume);
+
+  using Camera = vtkCamera;
+  Camera *camera = renderer->GetActiveCamera();
+  camera->SetPosition(0, 0, -4);
+
+  renderWindow->AddRenderer(renderer);
+  renderer->SetRenderWindow(renderWindow);
+
+  using WindowToImageFilter = vtkWindowToImageFilter;
+  vtkNew<WindowToImageFilter> windowToImageFilter;
+  windowToImageFilter->SetInput(renderWindow);
+  windowToImageFilter->Update();
+
+  using JPEGWriter = vtkJPEGWriter;
+  vtkNew<JPEGWriter> jpegWriter;
+  jpegWriter->SetFileName("tmp/out.jpg");
+  jpegWriter->SetInputConnection(windowToImageFilter->GetOutputPort());
+  jpegWriter->Write();
+
+# elif 0
+
+  // TODO(th): Try using the vtk rendering itself, without OSPRay
+
   int width = 512;
   int height = 512;
   OSPDevice device{nullptr};
-  OSPData volumeDataData{nullptr};
+  OSPData volumeCellTypeData{nullptr};
+  OSPData volumeCellIndexData{nullptr};
+  std::vector<float> volumeVertexPosition{};
+  OSPData volumeVertexPositionData{nullptr};
+  std::vector<float> volumeCellData{};
+  OSPData volumeCellDataData{nullptr};
+  OSPData volumeIndexData{nullptr};
   OSPVolume volume{nullptr};
   std::vector<float> transferFunctionColor{};
   OSPData transferFunctionColorData{nullptr};
@@ -415,70 +573,140 @@ int main(int argc, char **argv) {
   OSPCamera camera{nullptr};
   OSPRenderer renderer{nullptr};
   OSPFrameBuffer frameBuffer{nullptr};
+  OSPFuture future;
 
-  ospLoadModule("mpi");
+  // ospLoadModule("mpi");
 
-  device = ospNewDevice("mpiDistributed");
-  ospDeviceCommit(device);
-  ospSetCurrentDevice(device);
+  // device = ospNewDevice("mpiDistributed");
+  // ospDeviceCommit(device);
+  // ospSetCurrentDevice(device);
 
-  // if (volumeDataData) {
-  //   ospRelease(volumeDataData);
-  //   volumeDataData = nullptr;
-  // }
+  ospInit(nullptr, nullptr);
 
-  // volumeDataData = ospNewSharedData(volume, OSP_USHORT, nx, 0, ny, 0, nz, 0);
-  // ospCommit(volumeDataData);
+  {
+    using Array = vtkUnsignedCharArray;
+    Array *array = unstructuredGrid->GetCellTypesArray();
+    volumeCellTypeData = ospNewSharedData(array->GetPointer(0), OSP_USHORT,
+                                          array->GetNumberOfTuples(), 0,
+                                          array->GetNumberOfComponents(), 0,
+                                          1, 0);
+    ospCommit(volumeCellTypeData);
+  }
 
-  // volume = ospNewVolume("structuredRegular");
-  // ospSetVec3f(volume, "gridOrigin", -0.5f, -0.5f, -0.5f);
-  // ospSetVec3f(volume, "gridSpacing", 1.0f/(float)nx, 1.0f/(float)ny, 1.0f/(float)nz);
-  // ospSetObject(volume, "data", volumeDataData);
-  // ospSetBool(volume, "cellCentered", 1);
-  // ospCommit(volume);
+  {
+    using Array = vtkIdTypeArray;
+    Array *array = unstructuredGrid->GetCellLocationsArray();
+#   if !defined(VTK_USE_64BIT_IDS)
+#     error "The following code expects vtkIdType to be 64 bits"
+#   endif
+    volumeCellIndexData =
+      ospNewSharedData(array->GetPointer(0), OSP_ULONG,
+                       array->GetNumberOfTuples(), 0,
+                       array->GetNumberOfComponents(), 0,
+                       1, 0);
+    ospCommit(volumeCellIndexData);
+  }
 
-  // if (transferFunctionColorData) {
-  //   ospRelease(transferFunctionColorData);
-  //   transferFunctionColorData = nullptr;
-  // }
+  {
+    using Array = vtkDoubleArray;
+    Array *array = Array::SafeDownCast(unstructuredGrid->GetPoints()->GetData());
+    volumeVertexPosition.resize(array->GetNumberOfValues(), 0.0f);
+    for (size_t i=0; i<array->GetNumberOfValues(); ++i) {
+      volumeVertexPosition[i] = array->GetValue(i);
+    }
+    volumeVertexPositionData =
+      ospNewSharedData(volumeVertexPosition.data(), OSP_VEC3F,
+                       array->GetNumberOfTuples(), 0,
+                       array->GetNumberOfComponents() / 3, 0,
+                       1, 0);
+    ospCommit(volumeVertexPositionData);
+  }
 
-  // transferFunctionColor.clear();
-  // transferFunctionColor.insert(transferFunctionColor.end(), {
-  //   (CommRank % 3 == 0 ? 1.0f : 0.0f),
-  //   (CommRank % 3 == 1 ? 1.0f : 0.0f),
-  //   (CommRank % 3 == 2 ? 1.0f : 0.0f),
-  //   (CommRank % 3 == 0 ? 1.0f : 0.0f),
-  //   (CommRank % 3 == 1 ? 1.0f : 0.0f),
-  //   (CommRank % 3 == 2 ? 1.0f : 0.0f),
-  // });
+  {
+    using Array = vtkUnsignedShortArray;
+    Array *array = Array::SafeDownCast(unstructuredGrid->GetCellData()->GetScalars());
+    volumeCellData.resize(array->GetNumberOfValues(), 0.0f);
+    for (size_t i=0; i<array->GetNumberOfValues(); ++i) {
+      volumeCellData[i] = array->GetValue(i);
+    }
+    volumeCellDataData =
+      ospNewSharedData(volumeCellData.data(), OSP_FLOAT,
+                       array->GetNumberOfTuples(), 0,
+                       array->GetNumberOfComponents(), 0,
+                       1, 0);
+    ospCommit(volumeCellDataData);
+  }
 
-  // transferFunctionColorData = ospNewSharedData(transferFunctionColor.data(), OSP_VEC3F, transferFunctionColor.size() / 3);
-  // ospCommit(transferFunctionColorData);
+  {
+    using Array = vtkTypeInt64Array;
+    Array *array = Array::SafeDownCast(unstructuredGrid->GetCells()->GetConnectivityArray());
+#   if !defined(VTK_USE_64BIT_IDS)
+#     error "The following code expects vtkIdType to be 64 bits"
+#   endif
+    volumeIndexData =
+      ospNewSharedData(array->GetPointer(0), OSP_ULONG,
+                       array->GetNumberOfTuples(), 0,
+                       array->GetNumberOfComponents(), 0,
+                       1, 0);
+    ospCommit(volumeIndexData);
+  }
 
-  // if (transferFunctionOpacityData) {
-  //   ospRelease(transferFunctionOpacityData);
-  //   transferFunctionOpacityData = nullptr;
-  // }
+  volume = ospNewVolume("unstructured");
+  // https://ospray.org/documentation.html#volumes
+  // https://ospray.org/documentation.html#unstructured-volume
+  ospSetObject(volume, "vertex.position", volumeVertexPositionData);
+  ospSetObject(volume, "vertex.data", nullptr);
+  ospSetObject(volume, "index", volumeIndexData);
+  ospSetBool(volume, "indexPrefixed", false);
+  ospSetObject(volume, "cell.index", volumeCellIndexData);
+  ospSetObject(volume, "cell.data", volumeCellDataData);
+  ospSetObject(volume, "cell.type", volumeCellTypeData);
+  ospSetBool(volume, "hexIterative", false);
+  ospSetBool(volume, "precomputedNormals", false);
+  ospSetFloat(volume, "background", NAN);
 
-  // TransferFunctionOpacity.clear();
-  // TransferFunctionOpacity.insert(TransferFunctionOpacity.end(), {
-  //   0.0f,
-  //   1.0f,
-  // });
+  if (transferFunctionColorData) {
+    ospRelease(transferFunctionColorData);
+    transferFunctionColorData = nullptr;
+  }
 
-  // transferFunctionOpacityData = ospNewSharedData(TransferFunctionOpacity.data(), OSP_FLOAT, TransferFunctionOpacity.size() / 1);
-  // ospCommit(transferFunctionOpacityData);
+  transferFunctionColor.clear();
+  transferFunctionColor.insert(transferFunctionColor.end(), {
+    (opt_rank % 3 == 0 ? 1.0f : 0.0f),
+    (opt_rank % 3 == 1 ? 1.0f : 0.0f),
+    (opt_rank % 3 == 2 ? 1.0f : 0.0f),
+    (opt_rank % 3 == 0 ? 1.0f : 0.0f),
+    (opt_rank % 3 == 1 ? 1.0f : 0.0f),
+    (opt_rank % 3 == 2 ? 1.0f : 0.0f),
+  });
 
-  // transferFunction = ospNewTransferFunction("piecewiseLinear");
-  // ospSetObject(transferFunction, "color", transferFunctionColorData);
-  // ospSetObject(transferFunction, "opacity", transferFunctionOpacityData);
-  // ospSetVec2f(transferFunction, "valueRange", (float)0.0f, (float)hi);
-  // ospCommit(transferFunction);
+  transferFunctionColorData = ospNewSharedData(transferFunctionColor.data(), OSP_VEC3F, transferFunctionColor.size() / 3);
+  ospCommit(transferFunctionColorData);
 
-  // VolumetricModel = ospNewVolumetricModel(nullptr);
-  // ospSetObject(VolumetricModel, "volume", volume);
-  // ospSetObject(VolumetricModel, "transferFunction", transferFunction);
-  // ospCommit(VolumetricModel);
+  if (transferFunctionOpacityData) {
+    ospRelease(transferFunctionOpacityData);
+    transferFunctionOpacityData = nullptr;
+  }
+
+  TransferFunctionOpacity.clear();
+  TransferFunctionOpacity.insert(TransferFunctionOpacity.end(), {
+    0.0f,
+    1.0f,
+  });
+
+  transferFunctionOpacityData = ospNewSharedData(TransferFunctionOpacity.data(), OSP_FLOAT, TransferFunctionOpacity.size() / 1);
+  ospCommit(transferFunctionOpacityData);
+
+  transferFunction = ospNewTransferFunction("piecewiseLinear");
+  ospSetObject(transferFunction, "color", transferFunctionColorData);
+  ospSetObject(transferFunction, "opacity", transferFunctionOpacityData);
+  ospSetVec2f(transferFunction, "valueRange", (float)0.0f, (float)opt_nsteps);
+  ospCommit(transferFunction);
+
+  VolumetricModel = ospNewVolumetricModel(nullptr);
+  ospSetObject(VolumetricModel, "volume", volume);
+  ospSetObject(VolumetricModel, "transferFunction", transferFunction);
+  ospCommit(VolumetricModel);
 
   group = ospNewGroup();
   ospSetObjectAsData(group, "volume", OSP_VOLUMETRIC_MODEL, VolumetricModel);
@@ -499,17 +727,34 @@ int main(int argc, char **argv) {
 
   camera = ospNewCamera("perspective");
   ospSetFloat(camera, "aspect", (float)width / (float)height);
-  ospSetVec3f(camera, "position", 0.0f, 0.0f, 0.75f);
+  ospSetVec3f(camera, "position", 0.0f, 0.0f, 10.0f);
   ospSetVec3f(camera, "direction", 0.0f, 0.0f, -1.0f);
   ospSetVec3f(camera, "up", 0.0f, 1.0f, 0.0f);
   ospCommit(camera);
 
-  renderer = ospNewRenderer("mpiRaycast");
+  renderer = ospNewRenderer("scivis");
   ospSetInt(renderer, "pixelSamples", 16);
   ospSetVec3f(renderer, "backgroundColor", 0.0f, 0.0f, 0.0f);
   ospCommit(renderer);
 
   frameBuffer = ospNewFrameBuffer(width, height, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+
+  ospResetAccumulation(frameBuffer);
+  future = ospRenderFrame(frameBuffer, renderer, camera, world);
+  ospWait(future, OSP_TASK_FINISHED);
+  ospRelease(future);
+  future = nullptr;
+
+  if (opt_rank == 0) {
+    std::string filename = std::string("vtkOSPRay.") + std::to_string(0) + std::string(".ppm");
+    const void *fb = ospMapFrameBuffer(frameBuffer, OSP_FB_COLOR);
+    writePPM(filename.c_str(), width, height, static_cast<const uint32_t *>(fb));
+    ospUnmapFrameBuffer(fb, frameBuffer);
+  }
+
+  // MPI_Finalize();
+
+# endif
 
   return 0;
 }
