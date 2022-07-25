@@ -895,21 +895,34 @@ go-parbuildall() {
 }
 
 go--demo() {
+    rm -fv \
+    "${root:?}/vtkOSPRay."*".ppm" \
+    "${root:?}/vtkOSPRay."*".png" \
+    || die "Failed: rm"
+
     go src run mpirun \
     -np 4 \
-        gdb \
-        -ex='set confirm on' \
-        -ex=r \
-        --args \
             vtkPDistributedDataFilterExample \
             -d3 0 \
             -nsteps 512 \
+            -nx $((64 / 16)) \
+            -ny $((64 / 16)) \
+            -nz $((16 / 4)) \
+            -nxcuts 16 \
+            -nycuts 16 \
+            -nzcuts 4 \
+            -width 256 \
+            -height 256 \
+            -spp 16 \
     || die "Failed: vtkPDistributedDataFilterExample"
 
-    convert \
-    "${root:?}/vtkOSPRay.0.ppm" \
-    "${root:?}/vtkOSPRay.0.png" \
-    || die "Failed: convert"
+    shopt -s nullglob
+    for f in "${root:?}/vtkOSPRay."*".ppm"; do
+        convert \
+        "${f:?}" \
+        "${f%.ppm}.png" \
+        || die "Failed: convert ${f:?} ${f%.ppm}.png"
+    done
 }
 
 go--demo-exec() {

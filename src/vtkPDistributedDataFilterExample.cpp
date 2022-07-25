@@ -99,6 +99,10 @@ Mandelbrot::Mandelbrot(size_t nx_, size_t ny_, size_t nz_, Mandelbrot::BoundsF b
 }
 
 void Mandelbrot::debug(Debug which) {
+  if (nx > 16 || ny > 16 || nz > 16) {
+    return;
+  }
+
   for (size_t zi=0; zi<nz; ++zi) {
     size_t zindex = zi*ny*nx;
 
@@ -130,17 +134,17 @@ void Mandelbrot::debug(Debug which) {
 void Mandelbrot::step(size_t dt) {
   for (size_t zi=0; zi<nz; ++zi) {
     ScalarF zratio = (ScalarF)zi / (ScalarF)nz;
-    ScalarF z = std::get<MinZ>(bounds) * zratio + std::get<MaxZ>(bounds) * (1.0f - zratio);
+    ScalarF z = std::get<MinZ>(bounds) + zratio * (std::get<MaxZ>(bounds) - std::get<MinZ>(bounds));
     size_t zindex = zi*ny*nx;
 
     for (size_t yi=0; yi<ny; ++yi) {
       ScalarF yratio = (ScalarF)yi / (ScalarF)ny;
-      ScalarF y = std::get<MinY>(bounds) * yratio + std::get<MaxY>(bounds) * (1.0f - yratio);
+      ScalarF y = std::get<MinY>(bounds) + yratio * (std::get<MaxY>(bounds) - std::get<MinY>(bounds));
       size_t yindex = zindex + yi*nx;
 
       for (size_t xi=0; xi<nx; ++xi) {
         ScalarF xratio = (ScalarF)xi / (ScalarF)nx;
-        ScalarF x = std::get<MinX>(bounds) * xratio + std::get<MaxX>(bounds) * (1.0f - xratio);
+        ScalarF x = std::get<MinX>(bounds) + xratio * (std::get<MaxX>(bounds) - std::get<MinX>(bounds));
         size_t xindex = yindex + xi;
 
         for (size_t ti=0; ti<dt; ++ti) {
@@ -170,7 +174,6 @@ vtkUnstructuredGrid *Mandelbrot::vtk(vtkUnstructuredGrid *unstructuredGrid) {
 
   if (unstructuredGrid == nullptr) {
     points = Points::New(VTK_DOUBLE);
-    std::cerr << *points->GetData();
 
     array = Array::New();
     array->SetName("nsteps");
@@ -193,24 +196,27 @@ vtkUnstructuredGrid *Mandelbrot::vtk(vtkUnstructuredGrid *unstructuredGrid) {
 
   for (size_t i=0, zi=0; zi<nz; ++zi) {
     ScalarF z0ratio = (ScalarF)(zi + 0) / (ScalarF)nz;
-    ScalarF z0 = std::get<MinZ>(bounds) * z0ratio + std::get<MaxZ>(bounds) * (1.0f - z0ratio);
+    ScalarF z0 = std::get<MinZ>(bounds) + z0ratio * (std::get<MaxZ>(bounds) - std::get<MinZ>(bounds));
     ScalarF z1ratio = (ScalarF)(zi + 1) / (ScalarF)nz;
-    ScalarF z1 = std::get<MinZ>(bounds) * z1ratio + std::get<MaxZ>(bounds) * (1.0f - z1ratio);
+    ScalarF z1 = std::get<MinZ>(bounds) + z1ratio * (std::get<MaxZ>(bounds) - std::get<MinZ>(bounds));
     size_t zindex = zi*ny*nx;
+    assert(("the later code expects z0 < z1, so sanity check here", z0 < z1));
 
     for (size_t yi=0; yi<ny; ++yi) {
       ScalarF y0ratio = (ScalarF)(yi + 0) / (ScalarF)ny;
-      ScalarF y0 = std::get<MinY>(bounds) * y0ratio + std::get<MaxY>(bounds) * (1.0f - y0ratio);
+      ScalarF y0 = std::get<MinY>(bounds) + y0ratio * (std::get<MaxY>(bounds) - std::get<MinY>(bounds));
       ScalarF y1ratio = (ScalarF)(yi + 1) / (ScalarF)ny;
-      ScalarF y1 = std::get<MinY>(bounds) * y1ratio + std::get<MaxY>(bounds) * (1.0f - y1ratio);
+      ScalarF y1 = std::get<MinY>(bounds) + y1ratio * (std::get<MaxY>(bounds) - std::get<MinY>(bounds));
       size_t yindex = zindex + yi*nx;
+      assert(("the later code expects y0 < y1, so sanity check here", y0 < y1));
 
       for (size_t xi=0; xi<nx; ++xi, ++i) {
         ScalarF x0ratio = (ScalarF)(xi + 0) / (ScalarF)nx;
-        ScalarF x0 = std::get<MinX>(bounds) * x0ratio + std::get<MaxX>(bounds) * (1.0f - x0ratio);
+        ScalarF x0 = std::get<MinX>(bounds) + x0ratio * (std::get<MaxX>(bounds) - std::get<MinX>(bounds));
         ScalarF x1ratio = (ScalarF)(xi + 1) / (ScalarF)nx;
-        ScalarF x1 = std::get<MinX>(bounds) * x1ratio + std::get<MaxX>(bounds) * (1.0f - x1ratio);
+        ScalarF x1 = std::get<MinX>(bounds) + x1ratio * (std::get<MaxX>(bounds) - std::get<MinX>(bounds));
         size_t xindex = yindex + xi;
+        assert(("the later code expects x0 < x1, so sanity check here", x0 < x1));
 
         cell->GetPointIds()->SetId(0, points->InsertNextPoint(x0, y0, z0));
         cell->GetPointIds()->SetId(1, points->InsertNextPoint(x1, y0, z0));
@@ -293,7 +299,7 @@ int main(int argc, char **argv) {
   controller->Initialize(&argc, &argv, /* initializedExternally= */1);
   struct guard {
     guard(Controller *c) { vtkMultiProcessController::SetGlobalController(c); };
-    // ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
+    ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
   } guard(controller);
 
 #define DEBUG(Msg)                                                             \
@@ -328,6 +334,9 @@ int main(int argc, char **argv) {
   float opt_ymax;
   float opt_zmax;
   bool opt_enable_d3;
+  int opt_width;
+  int opt_height;
+  int opt_spp;
 
   opt_rank = controller->GetLocalProcessId();
   opt_nprocs = controller->GetNumberOfProcesses();
@@ -345,6 +354,9 @@ int main(int argc, char **argv) {
   opt_ymax = +2.0f;
   opt_zmax = 4.0f;
   opt_enable_d3 = false;
+  opt_width = 256;
+  opt_height = 256;
+  opt_spp = 1;
 
 #define ARGLOOP \
   if (char *ARGVAL=nullptr) \
@@ -374,6 +386,9 @@ int main(int argc, char **argv) {
   ARG("-ymax") opt_ymax = std::stof(ARGVAL);
   ARG("-zmax") opt_zmax = std::stof(ARGVAL);
   ARG("-d3") opt_enable_d3 = (bool)std::stoi(ARGVAL);
+  ARG("-width") opt_width = std::stoi(ARGVAL);
+  ARG("-height") opt_height = std::stoi(ARGVAL);
+  ARG("-spp") opt_spp = std::stoi(ARGVAL);
 
 #undef ARG
 #undef ARGLOOP
@@ -403,6 +418,10 @@ int main(int argc, char **argv) {
 
   for (size_t i=0; i<mandelbrots.size(); ++i) {
     mandelbrots[i].step(opt_nsteps);
+  }
+
+  if (controller->Barrier(), opt_rank == 0) {
+    mandelbrots[0].debug(Mandelbrot::Debug::OnlyNsteps);
   }
 
   using UnstructuredGrid = vtkUnstructuredGrid;
@@ -475,17 +494,14 @@ int main(int argc, char **argv) {
     }
   }
 
-# if 1
-
-  const int Width = 512;
-  const int Height = 512;
+# if 0
 
   using RenderWindow = vtkRenderWindow;
   vtkNew<RenderWindow> renderWindow;
   renderWindow->EraseOn();
   renderWindow->ShowWindowOff();
   renderWindow->UseOffScreenBuffersOn();
-  renderWindow->SetSize(Width, Height);
+  renderWindow->SetSize(opt_width, opt_height);
   renderWindow->SetMultiSamples(0);
 
   using RenderPass = vtkOSPRayPass;
@@ -543,19 +559,20 @@ int main(int argc, char **argv) {
   jpegWriter->SetInputConnection(windowToImageFilter->GetOutputPort());
   jpegWriter->Write();
 
-# elif 0
+# elif 1
 
   // TODO(th): Try using the vtk rendering itself, without OSPRay
 
-  int width = 512;
-  int height = 512;
   OSPDevice device{nullptr};
+  std::vector<uint8_t> volumeCellType{};
   OSPData volumeCellTypeData{nullptr};
+  std::vector<uint32_t> volumeCellIndex{};
   OSPData volumeCellIndexData{nullptr};
   std::vector<float> volumeVertexPosition{};
   OSPData volumeVertexPositionData{nullptr};
   std::vector<float> volumeCellData{};
   OSPData volumeCellDataData{nullptr};
+  std::vector<uint32_t> volumeIndex{};
   OSPData volumeIndexData{nullptr};
   OSPVolume volume{nullptr};
   std::vector<float> transferFunctionColor{};
@@ -563,7 +580,7 @@ int main(int argc, char **argv) {
   std::vector<float> TransferFunctionOpacity{};
   OSPData transferFunctionOpacityData{nullptr};
   OSPTransferFunction transferFunction{nullptr};
-  OSPVolumetricModel VolumetricModel{nullptr};
+  OSPVolumetricModel volumetricModel{nullptr};
   OSPGroup group{nullptr};
   OSPInstance instance{nullptr};
   OSPLight light{nullptr};
@@ -586,7 +603,11 @@ int main(int argc, char **argv) {
   {
     using Array = vtkUnsignedCharArray;
     Array *array = unstructuredGrid->GetCellTypesArray();
-    volumeCellTypeData = ospNewSharedData(array->GetPointer(0), OSP_USHORT,
+    volumeCellType.resize(array->GetNumberOfValues(), 0);
+    for (size_t i=0; i<array->GetNumberOfValues(); ++i) {
+      volumeCellType[i] = array->GetValue(i);
+    }
+    volumeCellTypeData = ospNewSharedData(volumeCellType.data(), OSP_UCHAR,
                                           array->GetNumberOfTuples(), 0,
                                           array->GetNumberOfComponents(), 0,
                                           1, 0);
@@ -596,11 +617,12 @@ int main(int argc, char **argv) {
   {
     using Array = vtkIdTypeArray;
     Array *array = unstructuredGrid->GetCellLocationsArray();
-#   if !defined(VTK_USE_64BIT_IDS)
-#     error "The following code expects vtkIdType to be 64 bits"
-#   endif
+    volumeCellIndex.resize(array->GetNumberOfValues(), 0);
+    for (size_t i=0; i<array->GetNumberOfValues(); ++i) {
+      volumeCellIndex[i] = array->GetValue(i);
+    }
     volumeCellIndexData =
-      ospNewSharedData(array->GetPointer(0), OSP_ULONG,
+      ospNewSharedData(volumeCellIndex.data(), OSP_UINT,
                        array->GetNumberOfTuples(), 0,
                        array->GetNumberOfComponents(), 0,
                        1, 0);
@@ -640,35 +662,55 @@ int main(int argc, char **argv) {
   {
     using Array = vtkTypeInt64Array;
     Array *array = Array::SafeDownCast(unstructuredGrid->GetCells()->GetConnectivityArray());
-#   if !defined(VTK_USE_64BIT_IDS)
-#     error "The following code expects vtkIdType to be 64 bits"
-#   endif
+    volumeIndex.resize(array->GetNumberOfValues(), 0.0f);
+    for (size_t i=0; i<array->GetNumberOfValues(); ++i) {
+      volumeIndex[i] = array->GetValue(i);
+    }
     volumeIndexData =
-      ospNewSharedData(array->GetPointer(0), OSP_ULONG,
+      ospNewSharedData(volumeIndex.data(), OSP_UINT,
                        array->GetNumberOfTuples(), 0,
                        array->GetNumberOfComponents(), 0,
                        1, 0);
     ospCommit(volumeIndexData);
   }
 
+  OSPGeometry geometry;
+  geometry = ospNewGeometry("sphere");
+  // https://ospray.org/documentation.html#geometries
+  // https://ospray.org/documentation.html#spheres
+  ospSetObject(geometry, "sphere.position", volumeVertexPositionData);
+  ospSetFloat(geometry, "radius", 0.01);
+  ospCommit(geometry);
+
+  OSPMaterial material;
+  material = ospNewMaterial(nullptr, "obj");
+  // https://ospray.org/documentation.html#materials
+  // https://ospray.org/documentation.html#obj-material
+  ospSetVec3f(material, "kd", 0.8, 0.8, 0.8);
+  ospCommit(material);
+
+  OSPGeometricModel geometricModel;
+  geometricModel = ospNewGeometricModel();
+  // https://ospray.org/documentation.html#geometries
+  // https://ospray.org/documentation.html#geometricmodels
+  ospSetObject(geometricModel, "geometry", geometry);
+  ospSetObject(geometricModel, "material", material);
+  ospCommit(geometricModel);
+
   volume = ospNewVolume("unstructured");
   // https://ospray.org/documentation.html#volumes
   // https://ospray.org/documentation.html#unstructured-volume
   ospSetObject(volume, "vertex.position", volumeVertexPositionData);
-  ospSetObject(volume, "vertex.data", nullptr);
+  // ospSetObject(volume, "vertex.data", nullptr);
   ospSetObject(volume, "index", volumeIndexData);
   ospSetBool(volume, "indexPrefixed", false);
   ospSetObject(volume, "cell.index", volumeCellIndexData);
   ospSetObject(volume, "cell.data", volumeCellDataData);
   ospSetObject(volume, "cell.type", volumeCellTypeData);
-  ospSetBool(volume, "hexIterative", false);
-  ospSetBool(volume, "precomputedNormals", false);
-  ospSetFloat(volume, "background", NAN);
-
-  if (transferFunctionColorData) {
-    ospRelease(transferFunctionColorData);
-    transferFunctionColorData = nullptr;
-  }
+  // ospSetBool(volume, "hexIterative", false);
+  // ospSetBool(volume, "precomputedNormals", false);
+  ospSetFloat(volume, "background", 0.0f);
+  ospCommit(volume);
 
   transferFunctionColor.clear();
   transferFunctionColor.insert(transferFunctionColor.end(), {
@@ -679,21 +721,14 @@ int main(int argc, char **argv) {
     (opt_rank % 3 == 1 ? 1.0f : 0.0f),
     (opt_rank % 3 == 2 ? 1.0f : 0.0f),
   });
-
   transferFunctionColorData = ospNewSharedData(transferFunctionColor.data(), OSP_VEC3F, transferFunctionColor.size() / 3);
   ospCommit(transferFunctionColorData);
-
-  if (transferFunctionOpacityData) {
-    ospRelease(transferFunctionOpacityData);
-    transferFunctionOpacityData = nullptr;
-  }
 
   TransferFunctionOpacity.clear();
   TransferFunctionOpacity.insert(TransferFunctionOpacity.end(), {
     0.0f,
     1.0f,
   });
-
   transferFunctionOpacityData = ospNewSharedData(TransferFunctionOpacity.data(), OSP_FLOAT, TransferFunctionOpacity.size() / 1);
   ospCommit(transferFunctionOpacityData);
 
@@ -703,13 +738,14 @@ int main(int argc, char **argv) {
   ospSetVec2f(transferFunction, "valueRange", (float)0.0f, (float)opt_nsteps);
   ospCommit(transferFunction);
 
-  VolumetricModel = ospNewVolumetricModel(nullptr);
-  ospSetObject(VolumetricModel, "volume", volume);
-  ospSetObject(VolumetricModel, "transferFunction", transferFunction);
-  ospCommit(VolumetricModel);
+  volumetricModel = ospNewVolumetricModel(nullptr);
+  ospSetObject(volumetricModel, "volume", volume);
+  ospSetObject(volumetricModel, "transferFunction", transferFunction);
+  ospCommit(volumetricModel);
 
   group = ospNewGroup();
-  ospSetObjectAsData(group, "volume", OSP_VOLUMETRIC_MODEL, VolumetricModel);
+  ospSetObjectAsData(group, "volume", OSP_VOLUMETRIC_MODEL, volumetricModel);
+  // ospSetObjectAsData(group, "geometry", OSP_GEOMETRIC_MODEL, geometricModel);
   ospCommit(group);
 
   instance = ospNewInstance(nullptr);
@@ -726,18 +762,19 @@ int main(int argc, char **argv) {
   ospCommit(world);
 
   camera = ospNewCamera("perspective");
-  ospSetFloat(camera, "aspect", (float)width / (float)height);
+  ospSetFloat(camera, "aspect", (float)opt_width / (float)opt_height);
   ospSetVec3f(camera, "position", 0.0f, 0.0f, 10.0f);
   ospSetVec3f(camera, "direction", 0.0f, 0.0f, -1.0f);
   ospSetVec3f(camera, "up", 0.0f, 1.0f, 0.0f);
   ospCommit(camera);
 
   renderer = ospNewRenderer("scivis");
-  ospSetInt(renderer, "pixelSamples", 16);
+  ospSetInt(renderer, "pixelSamples", opt_spp);
   ospSetVec3f(renderer, "backgroundColor", 0.0f, 0.0f, 0.0f);
   ospCommit(renderer);
 
-  frameBuffer = ospNewFrameBuffer(width, height, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM);
+  frameBuffer = ospNewFrameBuffer(opt_width, opt_height, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM | OSP_FB_DEPTH);
+  ospCommit(frameBuffer);
 
   ospResetAccumulation(frameBuffer);
   future = ospRenderFrame(frameBuffer, renderer, camera, world);
@@ -745,11 +782,13 @@ int main(int argc, char **argv) {
   ospRelease(future);
   future = nullptr;
 
-  if (opt_rank == 0) {
-    std::string filename = std::string("vtkOSPRay.") + std::to_string(0) + std::string(".ppm");
-    const void *fb = ospMapFrameBuffer(frameBuffer, OSP_FB_COLOR);
-    writePPM(filename.c_str(), width, height, static_cast<const uint32_t *>(fb));
-    ospUnmapFrameBuffer(fb, frameBuffer);
+  for (size_t i=0; i<opt_nprocs; ++i) {
+    if (controller->Barrier(), i == opt_rank) {
+      std::string filename = std::string("vtkOSPRay.") + std::to_string(opt_rank) + std::string(".ppm");
+      const void *fb = ospMapFrameBuffer(frameBuffer, OSP_FB_COLOR);
+      writePPM(filename.c_str(), opt_width, opt_height, static_cast<const uint32_t *>(fb));
+      ospUnmapFrameBuffer(fb, frameBuffer);
+    }
   }
 
   // MPI_Finalize();
