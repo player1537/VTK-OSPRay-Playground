@@ -299,7 +299,7 @@ int main(int argc, char **argv) {
   controller->Initialize(&argc, &argv, /* initializedExternally= */1);
   struct guard {
     guard(Controller *c) { vtkMultiProcessController::SetGlobalController(c); };
-    ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
+    // ~guard() { vtkMultiProcessController::GetGlobalController()->Finalize(); };
   } guard(controller);
 
 #define DEBUG(Msg)                                                             \
@@ -592,13 +592,24 @@ int main(int argc, char **argv) {
   OSPFrameBuffer frameBuffer{nullptr};
   OSPFuture future;
 
-  // ospLoadModule("mpi");
+  ospLoadModule("mpi");
 
-  // device = ospNewDevice("mpiDistributed");
-  // ospDeviceCommit(device);
-  // ospSetCurrentDevice(device);
+  device = ospNewDevice("mpiDistributed");
+  ospDeviceCommit(device);
+  ospSetCurrentDevice(device);
 
-  ospInit(nullptr, nullptr);
+  {
+    double bounds[6]; // xmin, xmax, ymin, ymax, zmin, zmax
+    unstructuredGrid->GetBounds(bounds);
+    worldRegion.insert(worldRegion.end(), {
+      bounds[0],
+      bounds[2],
+      bounds[4],
+      bounds[1],
+      bounds[3],
+      bounds[5],
+    });
+  }
 
   {
     using Array = vtkUnsignedCharArray;
@@ -755,6 +766,13 @@ int main(int argc, char **argv) {
   light = ospNewLight("ambient");
   ospCommit(light);
 
+  worldRegionData =
+    ospNewSharedData(worldRegion.data(), OSP_BOX3F,
+                     worldRegion.size() / 6, 0,
+                     1, 0,
+                     1, 0);
+  ospCommit(worldRegionData);
+
   world = ospNewWorld();
   ospSetObjectAsData(world, "instance", OSP_INSTANCE, instance);
   ospSetObjectAsData(world, "light", OSP_LIGHT, light);
@@ -768,7 +786,7 @@ int main(int argc, char **argv) {
   ospSetVec3f(camera, "up", 0.0f, 1.0f, 0.0f);
   ospCommit(camera);
 
-  renderer = ospNewRenderer("scivis");
+  renderer = ospNewRenderer("mpiRaycast");
   ospSetInt(renderer, "pixelSamples", opt_spp);
   ospSetVec3f(renderer, "backgroundColor", 0.0f, 0.0f, 0.0f);
   ospCommit(renderer);
@@ -782,13 +800,11 @@ int main(int argc, char **argv) {
   ospRelease(future);
   future = nullptr;
 
-  for (size_t i=0; i<opt_nprocs; ++i) {
-    if (controller->Barrier(), i == opt_rank) {
-      std::string filename = std::string("vtkOSPRay.") + std::to_string(opt_rank) + std::string(".ppm");
-      const void *fb = ospMapFrameBuffer(frameBuffer, OSP_FB_COLOR);
-      writePPM(filename.c_str(), opt_width, opt_height, static_cast<const uint32_t *>(fb));
-      ospUnmapFrameBuffer(fb, frameBuffer);
-    }
+  if (controller->Barrier(), opt_rank == 0) {
+    std::string filename = std::string("vtkOSPRay.") + std::to_string(opt_rank) + std::string(".ppm");
+    const void *fb = ospMapFrameBuffer(frameBuffer, OSP_FB_COLOR);
+    writePPM(filename.c_str(), opt_width, opt_height, static_cast<const uint32_t *>(fb));
+    ospUnmapFrameBuffer(fb, frameBuffer);
   }
 
   // MPI_Finalize();

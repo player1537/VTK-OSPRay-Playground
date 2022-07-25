@@ -903,7 +903,7 @@ go--demo() {
     go src run mpirun \
     -np 4 \
             vtkPDistributedDataFilterExample \
-            -d3 0 \
+            -d3 1 \
             -nsteps 512 \
             -nx $((64 / 16)) \
             -ny $((64 / 16)) \
